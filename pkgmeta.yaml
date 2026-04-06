@@ -1,0 +1,19 @@
+## CurseForge / WoWInterface automatic packager configuration
+## https://support.curseforge.com/support/solutions/articles/9000197281
+
+package-as: DjinnisCharacterFrame
+
+ignore:
+  - .git
+  - .gitignore
+  - .claude
+  - CHANGELOG.md
+  - CLAUDE.md
+  - deploy.ps1
+  - Docs
+  - pkgmeta.yaml
+  - release.ps1
+  - RELEASE_NOTES.md
+  - releases
+
+changelog: CHANGELOG.md
