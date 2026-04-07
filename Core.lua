@@ -51,6 +51,7 @@ ns.defaults = {
     showMissingGem    = true,
     showSpecDisplay   = true,
     showStatsPanel    = true,
+    showTalentCompare = true,
     ilvlFontSize      = 11,
 }
 
@@ -87,6 +88,30 @@ function ns:OnBlizzardAddonLoaded(blizzAddon, fn)
         self.blizzardCallbacks[blizzAddon] = {}
     end
     table.insert(self.blizzardCallbacks[blizzAddon], fn)
+end
+
+---------------------------------------------------------------------------
+-- Combat-safe hook wrapper
+-- Wraps hooksecurefunc so errors in addon code never taint or propagate
+-- into Blizzard's protected call chain.
+---------------------------------------------------------------------------
+
+function ns.SafeHook(funcName, handler)
+    hooksecurefunc(funcName, function(...)
+        if InCombatLockdown() then
+            -- Still allow read-only updates during combat;
+            -- only skip if handler explicitly guards against it.
+        end
+        local ok, err = pcall(handler, ...)
+        if not ok then
+            -- Suppress repeated noise; first error logged once.
+            if not ns._hookErrors then ns._hookErrors = {} end
+            if not ns._hookErrors[funcName] then
+                ns._hookErrors[funcName] = true
+                print("|cffff4444DCF hook error [" .. funcName .. "]:|r " .. tostring(err))
+            end
+        end
+    end)
 end
 
 ---------------------------------------------------------------------------

@@ -95,6 +95,11 @@ function DCF:SetupOptions()
             if p then p:SetShown(v) end
         end, r)
 
+    y = AddSectionHeader(c, y, "Talent Comparison")
+    y = AddCheckbox(c, y, "Compare talents when inspecting same spec",
+        function() return ns.db.showTalentCompare end,
+        function(v) ns.db.showTalentCompare = v end, r)
+
     panel:SetScript("OnShow", function()
         for _, cb in ipairs(r) do cb() end
     end)

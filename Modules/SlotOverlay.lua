@@ -1,25 +1,30 @@
 -- Djinni's Character Frame — SlotOverlay
 -- Creates and updates per-slot ilvl / enchant / gem overlays on both the
 -- Character frame and the Inspect frame.
+--
+-- Overlays are pre-initialised when each Blizzard addon loads (not lazily
+-- inside hook callbacks) so that no frames are created during combat.
 local addonName, ns = ...
 
 local mod = {}
 ns:RegisterModule("SlotOverlay", mod)
 
-local Data   = ns.Data
-local Inspect = ns.Inspect
+local Data = ns.Data
 
 ---------------------------------------------------------------------------
 -- Overlay widget creation
--- Each slot button gets three lazy-created overlays:
+-- Each slot button gets four overlays:
 --   .DCF_ilvl     FontString  bottom-right  item level number
---   .DCF_enchant  FontString  top-left      enchant short name (green)
+--   .DCF_enchant  FontString  top-left      enchant short name (blue)
 --   .DCF_missing  Texture     top-right     red dot when enchant absent
 --   .DCF_gems     FontString  bottom-left   "filled/total" gem count
 ---------------------------------------------------------------------------
 
 local function EnsureOverlays(button)
     if button.DCF_ilvl then return end
+    -- Guard: never create frames during combat (should not happen with pre-init,
+    -- but keep as a safety net for any edge case).
+    if InCombatLockdown() then return end
 
     local ilvl = button:CreateFontString(nil, "OVERLAY")
     ilvl:SetFont("Fonts\\FRIZQT__.TTF", 11, "OUTLINE")
@@ -28,24 +33,47 @@ local function EnsureOverlays(button)
     button.DCF_ilvl = ilvl
 
     local ench = button:CreateFontString(nil, "OVERLAY")
-    ench:SetFont("Fonts\\FRIZQT__.TTF", 8, "OUTLINE")
+    ench:SetFont("Fonts\\FRIZQT__.TTF", 9, "OUTLINE")
     ench:SetPoint("TOPLEFT", button, "TOPLEFT", 2, -2)
     ench:SetJustifyH("LEFT")
-    ench:SetTextColor(0.4, 0.85, 1, 1)
+    ench:SetTextColor(0.4, 1.0, 0.4, 1)
     button.DCF_enchant = ench
 
-    local miss = button:CreateTexture(nil, "OVERLAY")
-    miss:SetSize(7, 7)
-    miss:SetPoint("TOPRIGHT", button, "TOPRIGHT", -2, -2)
-    miss:SetColorTexture(1, 0.15, 0.15, 0.9)
+    -- Missing enchant: bold "!" text (far more visible than a tiny dot)
+    local miss = button:CreateFontString(nil, "OVERLAY")
+    miss:SetFont("Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
+    miss:SetPoint("TOPRIGHT", button, "TOPRIGHT", -1, -1)
+    miss:SetJustifyH("RIGHT")
+    miss:SetTextColor(1, 0.2, 0.2, 1)
+    miss:SetText("!")
     miss:Hide()
     button.DCF_missing = miss
 
     local gems = button:CreateFontString(nil, "OVERLAY")
-    gems:SetFont("Fonts\\FRIZQT__.TTF", 8, "OUTLINE")
+    gems:SetFont("Fonts\\FRIZQT__.TTF", 9, "OUTLINE")
     gems:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 2, 2)
     gems:SetJustifyH("LEFT")
     button.DCF_gems = gems
+end
+
+---------------------------------------------------------------------------
+-- Pre-initialise all slot buttons for a given frame type
+-- Call these once when the respective Blizzard addon loads, so overlays
+-- exist before any combat can occur.
+---------------------------------------------------------------------------
+
+local function PreInitCharSlots()
+    for _, info in pairs(Data.SLOTS) do
+        local btn = _G[info.char]
+        if btn then EnsureOverlays(btn) end
+    end
+end
+
+local function PreInitInspectSlots()
+    for _, info in pairs(Data.SLOTS) do
+        local btn = _G[info.inspect]
+        if btn then EnsureOverlays(btn) end
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -54,7 +82,13 @@ end
 
 local function UpdateSlot(button, unit)
     if not button or not button.GetID then return end
-    EnsureOverlays(button)
+    -- If overlays somehow don't exist yet (safety net) and we're out of combat,
+    -- create them now; otherwise skip silently.
+    if not button.DCF_ilvl then
+        if InCombatLockdown() then return end
+        EnsureOverlays(button)
+        if not button.DCF_ilvl then return end
+    end
 
     local db     = ns.db
     local slotID = button:GetID()
@@ -78,11 +112,9 @@ local function UpdateSlot(button, unit)
     if isEnchantable and link then
         local enchID = Data.GetEnchantID(link)
         if enchID > 0 then
-            -- Has an enchant — try to get a readable name
             if db.showEnchants then
                 local name = Data.GetEnchantName(unit, slotID)
                 if name then
-                    -- Truncate to first word or ~10 chars so it fits the slot
                     local short = name:match("^(%S+)") or name
                     if #short > 10 then short = short:sub(1, 10) end
                     button.DCF_enchant:SetText(short)
@@ -96,7 +128,6 @@ local function UpdateSlot(button, unit)
             end
             button.DCF_missing:Hide()
         else
-            -- No enchant on an enchantable slot
             button.DCF_enchant:Hide()
             if db.showMissingEnchant then
                 button.DCF_missing:Show()
@@ -114,15 +145,12 @@ local function UpdateSlot(button, unit)
         local total, filled = Data.GetGemCounts(link)
         if total > 0 then
             if db.showGems then
+                button.DCF_gems:SetText(filled .. "/" .. total)
                 if filled < total then
-                    button.DCF_gems:SetText(filled .. "/" .. total)
-                    if db.showMissingGem then
-                        button.DCF_gems:SetTextColor(1, 0.35, 0.1, 1)
-                    else
-                        button.DCF_gems:SetTextColor(0.9, 0.75, 0.2, 1)
-                    end
+                    button.DCF_gems:SetTextColor(db.showMissingGem and 1 or 0.9,
+                                                 db.showMissingGem and 0.35 or 0.75,
+                                                 db.showMissingGem and 0.1 or 0.2, 1)
                 else
-                    button.DCF_gems:SetText(filled .. "/" .. total)
                     button.DCF_gems:SetTextColor(0.4, 1, 0.4, 0.8)
                 end
                 button.DCF_gems:Show()
@@ -142,7 +170,7 @@ end
 ---------------------------------------------------------------------------
 
 function mod:UpdateCharacter()
-    for slotID, info in pairs(Data.SLOTS) do
+    for _, info in pairs(Data.SLOTS) do
         local btn = _G[info.char]
         if btn then UpdateSlot(btn, "player") end
     end
@@ -151,7 +179,7 @@ end
 function mod:UpdateInspect(unit)
     unit = unit or (InspectFrame and InspectFrame.unit)
     if not unit then return end
-    for slotID, info in pairs(Data.SLOTS) do
+    for _, info in pairs(Data.SLOTS) do
         local btn = _G[info.inspect]
         if btn then UpdateSlot(btn, unit) end
     end
@@ -174,9 +202,11 @@ end
 ---------------------------------------------------------------------------
 
 function mod:Init()
-    -- Character frame hooks (Blizzard_UIPanels_Game)
+    -- Character frame (Blizzard_UIPanels_Game)
     ns:OnBlizzardAddonLoaded("Blizzard_UIPanels_Game", function()
-        hooksecurefunc("PaperDollItemSlotButton_Update", function(btn)
+        PreInitCharSlots()
+
+        ns.SafeHook("PaperDollItemSlotButton_Update", function(btn)
             if not ns.db.showIlvl and not ns.db.showEnchants
                and not ns.db.showGems and not ns.db.showMissingEnchant
                and not ns.db.showMissingGem then return end
@@ -184,35 +214,45 @@ function mod:Init()
         end)
     end)
 
-    -- Inspect frame hooks (Blizzard_InspectUI)
+    -- Inspect frame (Blizzard_InspectUI)
     ns:OnBlizzardAddonLoaded("Blizzard_InspectUI", function()
-        hooksecurefunc("InspectPaperDollItemSlotButton_Update", function(btn)
+        PreInitInspectSlots()
+
+        ns.SafeHook("InspectPaperDollItemSlotButton_Update", function(btn)
             if not InspectFrame or not InspectFrame.unit then return end
             UpdateSlot(btn, InspectFrame.unit)
         end)
 
-        -- Also update when inspect frame is shown (data may already be cached)
-        hooksecurefunc("InspectPaperDollFrame_OnShow", function()
+        ns.SafeHook("InspectPaperDollFrame_OnShow", function()
             if InspectFrame and InspectFrame.unit then
                 mod:UpdateInspect(InspectFrame.unit)
             end
         end)
 
-        -- Clear overlays when inspect frame is closed
-        hooksecurefunc("InspectFrame_Hide", function()
-            mod:ClearInspect()
+        -- HookScript catches ALL hide paths (out-of-range, target change, ESC, etc.)
+        InspectFrame:HookScript("OnHide", function()
+            local ok, err = pcall(mod.ClearInspect, mod)
+            if not ok then
+                print("|cffff4444DCF SlotOverlay OnHide error:|r " .. tostring(err))
+            end
         end)
     end)
 
-    -- Update character slots when equipment changes
+    -- Equipment change → refresh character slots
     local equipFrame = CreateFrame("Frame")
     equipFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
     equipFrame:SetScript("OnEvent", function()
-        mod:UpdateCharacter()
+        local ok, err = pcall(mod.UpdateCharacter, mod)
+        if not ok then
+            print("|cffff4444DCF SlotOverlay PLAYER_EQUIPMENT_CHANGED error:|r " .. tostring(err))
+        end
     end)
 
-    -- Update on inspect ready (fired by Inspect.lua's callbacks)
+    -- Inspect ready → refresh inspect slots
     ns.Inspect:OnInspectReady(function(unit)
-        mod:UpdateInspect(unit)
+        local ok, err = pcall(mod.UpdateInspect, mod, unit)
+        if not ok then
+            print("|cffff4444DCF SlotOverlay InspectReady error:|r " .. tostring(err))
+        end
     end)
 end

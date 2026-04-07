@@ -87,33 +87,6 @@ local function UpdateCharBadge()
 end
 
 ---------------------------------------------------------------------------
--- Inspect frame role icon
--- We hook into InspectPaperDollFrame_SetLevel which already sets the level
--- text. We add a small role icon beside InspectLevelText.
----------------------------------------------------------------------------
-
-local inspectRoleIcon = nil
-
-local function UpdateInspectRole()
-    if not inspectRoleIcon then return end
-    if not ns.db.showSpecDisplay then inspectRoleIcon:Hide(); return end
-    if not InspectFrame or not InspectFrame.unit then inspectRoleIcon:Hide(); return end
-
-    local unit  = InspectFrame.unit
-    local specID = GetInspectSpecialization(unit)
-    if not specID or specID == 0 then inspectRoleIcon:Hide(); return end
-
-    local sex = UnitSex(unit)
-    local _, _, _, iconID, _, role = GetSpecializationInfoByID(specID, sex)
-    if not iconID then inspectRoleIcon:Hide(); return end
-
-    inspectRoleIcon:SetTexture(iconID)
-    local rc = ROLE_COLORS[role] or { 0.8, 0.8, 0.8 }
-    inspectRoleIcon:SetVertexColor(rc[1], rc[2], rc[3], 1)
-    inspectRoleIcon:Show()
-end
-
----------------------------------------------------------------------------
 -- Init
 ---------------------------------------------------------------------------
 
@@ -138,24 +111,6 @@ function mod:Init()
         end)
     end)
 
-    ns:OnBlizzardAddonLoaded("Blizzard_InspectUI", function()
-        -- Small spec icon to the right of InspectLevelText
-        local anchor = _G.InspectLevelText
-        if anchor then
-            inspectRoleIcon = InspectFrame:CreateTexture(nil, "OVERLAY")
-            inspectRoleIcon:SetSize(16, 16)
-            inspectRoleIcon:SetPoint("LEFT", anchor, "RIGHT", 6, 0)
-            inspectRoleIcon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-            inspectRoleIcon:Hide()
-        end
-
-        hooksecurefunc("InspectPaperDollFrame_SetLevel", function()
-            UpdateInspectRole()
-        end)
-    end)
-
-    -- Update inspect role after inspect data is ready
-    ns.Inspect:OnInspectReady(function()
-        UpdateInspectRole()
-    end)
+    -- Inspect spec is handled by InspectPanel (full panel with ilvl + audit + spec).
+    -- SpecDisplay only manages the character frame self-view badge.
 end
