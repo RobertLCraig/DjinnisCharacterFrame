@@ -76,6 +76,7 @@ end
 
 local function UpdateCharBadge()
     if not charBadge then return end
+    if not ns.addon:IsEnabled() then charBadge:Hide(); return end
     if not ns.db.showSpecDisplay then charBadge:Hide(); return end
 
     local specIndex = C_SpecializationInfo.GetSpecialization()
@@ -84,6 +85,16 @@ local function UpdateCharBadge()
     local specID = select(1, C_SpecializationInfo.GetSpecializationInfo(specIndex))
     local sex    = UnitSex("player")
     UpdateBadge(charBadge, specID, sex)
+end
+
+function mod:SetVisible(state)
+    if charBadge then
+        if state and ns.db.showSpecDisplay then
+            UpdateCharBadge()
+        else
+            charBadge:Hide()
+        end
+    end
 end
 
 ---------------------------------------------------------------------------

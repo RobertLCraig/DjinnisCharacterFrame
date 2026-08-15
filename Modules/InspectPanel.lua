@@ -1,13 +1,18 @@
 -- Djinni's Character Frame — InspectPanel
 -- Companion stats panel anchored to the right of InspectFrame.
+-- Matches the character frame StatsPanel visual style: gradient headers,
+-- collapsible sections, stat rows with tooltips.
 --
 -- Sections:
---   Item Level       — C_PaperDollInfo.GetInspectItemLevel or computed
---   Specialisation   — GetInspectSpecialization + GetSpecializationInfoByID
---   Gear Audit       — interactive enchant/gem breakdown with AH shopping lists
---   Attributes       — primary stats summed from gear (C_Item.GetItemStats)
---   Enhancements     — secondary stat ratings summed from gear
---   Talent Compare   — node-by-node diff when same class+spec (C_Traits)
+--   Item Level       — avg ilvl (class-coloured) + per-slot breakdown tooltip
+--   Specialisation   — spec icon + name + role badge
+--   Gear Audit       — interactive enchant/gem status with AH shopping lists
+--   Tier Sets        — class set detection with bonus status
+--   Attributes       — primary stat + stamina + health
+--   Secondary        — crit/haste/mastery/vers (rating + estimated %)
+--   Defense          — dodge/parry (estimated)
+--   General          — leech/avoidance/speed (from gear)
+--   Talent Compare   — node-by-node diff when same class+spec
 local addonName, ns = ...
 
 local mod = {}
@@ -26,21 +31,31 @@ local DIFF_ROW_H    = 15
 -- Slot lists
 ---------------------------------------------------------------------------
 
-local ILVL_SLOTS  = { 1,2,3,5,6,7,8,9,10,11,12,13,14,15,16,17 }
+local ILVL_SLOTS  = Data.ILVL_SLOTS
 local ENCHANTABLE = Data.ENCHANTABLE
 
 ---------------------------------------------------------------------------
--- Colours
+-- Section colours (match StatsPanel)
 ---------------------------------------------------------------------------
 
-local C_HEADER = { 1.00, 0.82, 0.00 }
+local SEC_COLORS = {
+    ILVL       = { r = 0.40, g = 0.78, b = 1.00 },
+    SPEC       = { r = 0.80, g = 0.60, b = 1.00 },
+    AUDIT      = { r = 1.00, g = 0.82, b = 0.00 },
+    TIER       = { r = 0.40, g = 0.78, b = 1.00 },
+    ATTRIBUTES = { r = 0.90, g = 0.70, b = 0.20 },
+    SECONDARY  = { r = 0.40, g = 0.80, b = 0.40 },
+    DEFENSE    = { r = 0.29, g = 0.46, b = 0.90 },
+    GENERAL    = { r = 0.70, g = 0.70, b = 0.70 },
+    TALENTS    = { r = 0.80, g = 0.40, b = 1.00 },
+}
+
 local C_LABEL  = { 0.68, 0.68, 0.68 }
 local C_VALUE  = { 1.00, 1.00, 1.00 }
 local C_GOOD   = { 0.40, 1.00, 0.40 }
 local C_WARN   = { 1.00, 0.65, 0.10 }
 local C_BAD    = { 1.00, 0.25, 0.25 }
 local C_NA     = { 0.45, 0.45, 0.45 }
-
 local CLR_YOU  = "66c8ff"
 local CLR_THEM = "ffa533"
 
@@ -48,19 +63,20 @@ local CLR_THEM = "ffa533"
 -- Layout
 ---------------------------------------------------------------------------
 
-local PANEL_W = 200
-local PAD_X   = 10
-local PAD_Y   = 8
+local PANEL_W = 210
+local PAD_X   = 8
+local PAD_Y   = 6
 local ROW_H   = 17
-local HDR_H   = 20
-local SEP_GAP = 4
+local HDR_H   = 18
+local ROW_SPC = 1
 
 ---------------------------------------------------------------------------
--- Per-slot detail (populated during Refresh, read by tooltip handlers)
+-- Per-slot detail (populated during Refresh)
 ---------------------------------------------------------------------------
 
-local enchDetail = {}   -- { {slotID, slotName, hasEnchant, enchantName}, ... }
-local gemDetail  = {}   -- { {slotID, slotName, total, filled}, ... }
+local enchDetail  = {}
+local gemDetail   = {}
+local slotDetail  = {}
 local currentUnit = nil
 
 ---------------------------------------------------------------------------
@@ -69,8 +85,7 @@ local currentUnit = nil
 
 local function CreateEnchantShoppingList()
     if not Auctionator or not Auctionator.API or not Auctionator.API.v1 then
-        ns.addon:Print("Auctionator is not loaded.")
-        return
+        ns.addon:Print("Auctionator is not loaded."); return
     end
     local parentCat = AUCTION_CATEGORY_ITEM_ENHANCEMENT or "Item Enhancements"
     local expID     = LE_EXPANSION_LEVEL_CURRENT or 11
@@ -85,8 +100,7 @@ local function CreateEnchantShoppingList()
         end
     end
     if #terms == 0 then
-        ns.addon:Print("No missing enchants with known AH categories.")
-        return
+        ns.addon:Print("No missing enchants with known AH categories."); return
     end
     local ok, err = pcall(Auctionator.API.v1.CreateShoppingList,
         "DjinnisCharacterFrame", "DCF - Missing Enchants", terms)
@@ -99,16 +113,14 @@ end
 
 local function CreateGemShoppingList()
     if not Auctionator or not Auctionator.API or not Auctionator.API.v1 then
-        ns.addon:Print("Auctionator is not loaded.")
-        return
+        ns.addon:Print("Auctionator is not loaded."); return
     end
     local hasMissing = false
     for _, info in ipairs(gemDetail) do
         if info.filled < info.total then hasMissing = true; break end
     end
     if not hasMissing then
-        ns.addon:Print("No missing gems.")
-        return
+        ns.addon:Print("No missing gems."); return
     end
     local gemCat = AUCTION_CATEGORY_GEMS or "Gems"
     local expID  = LE_EXPANSION_LEVEL_CURRENT or 11
@@ -129,13 +141,10 @@ end
 local function GetTalentSpellName(configID, entryID)
     if not entryID or entryID == 0 then return nil end
     if not C_Traits or not C_Traits.GetEntryInfo then return nil end
-
     local ok, entryInfo = pcall(C_Traits.GetEntryInfo, configID, entryID)
     if not ok or not entryInfo or not entryInfo.definitionID then return nil end
-
     local ok2, defInfo = pcall(C_Traits.GetDefinitionInfo, entryInfo.definitionID)
     if not ok2 or not defInfo or not defInfo.spellID then return nil end
-
     if C_Spell and C_Spell.GetSpellName then
         local ok3, name = pcall(C_Spell.GetSpellName, defInfo.spellID)
         if ok3 and name then return name end
@@ -147,15 +156,12 @@ local function GetTalentSpellName(configID, entryID)
     return nil
 end
 
---- Returns { total, matching, diffs } or nil, reason.
---- reason == "class" or "spec" means "hide section entirely".
 local function ComputeTalentDiff(unit)
     local _, playerClass = UnitClass("player")
     local _, targetClass = UnitClass(unit)
     if not playerClass or not targetClass or playerClass ~= targetClass then
         return nil, "class"
     end
-
     local playerSpecIndex = C_SpecializationInfo.GetSpecialization()
     if not playerSpecIndex then return nil, "spec" end
     local playerSpecID = select(1, C_SpecializationInfo.GetSpecializationInfo(playerSpecIndex))
@@ -163,25 +169,20 @@ local function ComputeTalentDiff(unit)
     if not playerSpecID or not targetSpecID or playerSpecID ~= targetSpecID then
         return nil, "spec"
     end
-
     if not C_ClassTalents or not C_ClassTalents.GetActiveConfigID then
         return nil, "api"
     end
     local playerConfigID = C_ClassTalents.GetActiveConfigID()
     if not playerConfigID then return nil, "api" end
-
     if not C_Traits or not C_Traits.GetConfigInfo then return nil, "api" end
-
     local ok, configInfo = pcall(C_Traits.GetConfigInfo, playerConfigID)
     if not ok or not configInfo or not configInfo.treeIDs
        or #configInfo.treeIDs == 0 then
         return nil, "api"
     end
     local treeID = configInfo.treeIDs[1]
-
     local ok2, nodeIDs = pcall(C_Traits.GetTreeNodes, treeID)
     if not ok2 or not nodeIDs then return nil, "api" end
-
     local inspectConfigID
     local ok3, cid = pcall(function()
         return Constants.TraitConsts.INSPECT_TRAIT_CONFIG_ID
@@ -189,23 +190,17 @@ local function ComputeTalentDiff(unit)
     if ok3 and cid then inspectConfigID = cid end
     if not inspectConfigID then return nil, "api" end
 
-    local totalActive = 0
-    local matching    = 0
-    local diffs       = {}
-
+    local totalActive, matching, diffs = 0, 0, {}
     for _, nodeID in ipairs(nodeIDs) do
         local ok4, pNode = pcall(C_Traits.GetNodeInfo, playerConfigID, nodeID)
         local ok5, iNode = pcall(C_Traits.GetNodeInfo, inspectConfigID, nodeID)
-
         if ok4 and ok5 and pNode and iNode then
             local pRank = pNode.activeRank or 0
             local iRank = iNode.activeRank or 0
-
             if pRank > 0 or iRank > 0 then
                 totalActive = totalActive + 1
                 local pEntry = pNode.activeEntry and pNode.activeEntry.entryID or 0
                 local iEntry = iNode.activeEntry and iNode.activeEntry.entryID or 0
-
                 if pRank == iRank and pEntry == iEntry then
                     matching = matching + 1
                 else
@@ -219,16 +214,11 @@ local function ComputeTalentDiff(unit)
             end
         end
     end
-
-    return {
-        total    = totalActive,
-        matching = matching,
-        diffs    = diffs,
-    }
+    return { total = totalActive, matching = matching, diffs = diffs }
 end
 
 ---------------------------------------------------------------------------
--- Data computation (ilvl, spec, enchants, gems, gear stats)
+-- Data computation
 ---------------------------------------------------------------------------
 
 local function ComputeData(unit)
@@ -284,11 +274,8 @@ local function ComputeData(unit)
            primary, secondary
 end
 
---- Build per-slot enchant/gem detail tables for tooltip display.
 local function BuildSlotDetail(unit)
     local ed, gd = {}, {}
-
-    -- Enchant detail: one entry per enchantable slot that has gear
     for _, sid in ipairs(ILVL_SLOTS) do
         if ENCHANTABLE[sid] then
             local link = GetInventoryItemLink(unit, sid)
@@ -296,16 +283,14 @@ local function BuildSlotDetail(unit)
                 local hasEnch = Data.GetEnchantID(link) > 0
                 local enchName = hasEnch and Data.GetEnchantName(unit, sid) or nil
                 table.insert(ed, {
-                    slotID    = sid,
-                    slotName  = Data.SLOT_NAMES[sid] or "?",
-                    hasEnchant = hasEnch,
+                    slotID      = sid,
+                    slotName    = Data.SLOT_NAMES[sid] or "?",
+                    hasEnchant  = hasEnch,
                     enchantName = enchName,
                 })
             end
         end
     end
-
-    -- Gem detail: one entry per slot that has sockets
     for _, sid in ipairs(ILVL_SLOTS) do
         local link = GetInventoryItemLink(unit, sid)
         if link then
@@ -320,7 +305,6 @@ local function BuildSlotDetail(unit)
             end
         end
     end
-
     return ed, gd
 end
 
@@ -332,69 +316,132 @@ local panel   = nil
 local widgets = {}
 
 ---------------------------------------------------------------------------
--- Build helpers
+-- Build helpers (matching StatsPanel visual style)
 ---------------------------------------------------------------------------
 
-local function MakeSep(parent, y)
-    local sep = parent:CreateTexture(nil, "ARTWORK")
-    sep:SetHeight(1)
-    sep:SetPoint("TOPLEFT",  parent, "TOPLEFT",  PAD_X,  y)
-    sep:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -PAD_X, y)
-    sep:SetColorTexture(0.35, 0.35, 0.35, 0.6)
-    return y - (1 + SEP_GAP)
+local function MakeGradientHeader(parent, key, title, color, y)
+    local f = CreateFrame("Button", nil, parent)
+    f:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y)
+    f:SetPoint("RIGHT", parent, "RIGHT", 0, 0)
+    f:SetHeight(HDR_H)
+
+    local bg = f:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(color.r, color.g, color.b, 0.20)
+
+    local grad = f:CreateTexture(nil, "BACKGROUND", nil, 1)
+    grad:SetAllPoints()
+    grad:SetGradient("HORIZONTAL",
+        CreateColor(color.r, color.g, color.b, 0.30),
+        CreateColor(color.r, color.g, color.b, 0.03))
+
+    local chev = f:CreateFontString(nil, "OVERLAY")
+    chev:SetFont("Fonts\\FRIZQT__.TTF", 8, "OUTLINE")
+    chev:SetPoint("LEFT", f, "LEFT", 4, 0)
+    chev:SetTextColor(color.r, color.g, color.b, 0.7)
+    f.chevron = chev
+
+    local txt = f:CreateFontString(nil, "OVERLAY")
+    txt:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+    txt:SetPoint("LEFT", chev, "RIGHT", 3, 0)
+    txt:SetTextColor(color.r, color.g, color.b, 1)
+    txt:SetText(title)
+
+    local hl = f:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(1, 1, 1, 0.04)
+
+    f.isCollapsed = false
+    f.sectionKey = key
+
+    local function UpdateChev()
+        chev:SetText(f.isCollapsed and "+" or "-")
+    end
+    UpdateChev()
+
+    f:SetScript("OnClick", function()
+        f.isCollapsed = not f.isCollapsed
+        UpdateChev()
+        if widgets.layoutFunc then widgets.layoutFunc() end
+    end)
+
+    return f, y - HDR_H - ROW_SPC
 end
 
-local function MakeHeader(parent, y, text)
-    local fs = parent:CreateFontString(nil, "OVERLAY")
-    fs:SetFont("Fonts\\FRIZQT__.TTF", 12, "")
-    fs:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, y)
-    fs:SetTextColor(C_HEADER[1], C_HEADER[2], C_HEADER[3])
-    fs:SetText(text)
-    return y - HDR_H
-end
+local function MakeStatRow(parent)
+    local f = CreateFrame("Frame", nil, parent)
+    f:SetHeight(ROW_H)
 
-local function MakeRow(parent, y, labelText)
-    local lbl = parent:CreateFontString(nil, "OVERLAY")
-    lbl:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
-    lbl:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X + 4, y)
+    local bg = f:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(0.05, 0.05, 0.05, 0.4)
+
+    local lbl = f:CreateFontString(nil, "OVERLAY")
+    lbl:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+    lbl:SetPoint("LEFT", f, "LEFT", PAD_X, 0)
+    lbl:SetJustifyH("LEFT")
     lbl:SetTextColor(C_LABEL[1], C_LABEL[2], C_LABEL[3])
-    lbl:SetText(labelText)
+    f.label = lbl
 
-    local val = parent:CreateFontString(nil, "OVERLAY")
-    val:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
-    val:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -PAD_X, y)
+    local val = f:CreateFontString(nil, "OVERLAY")
+    val:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+    val:SetPoint("RIGHT", f, "RIGHT", -PAD_X, 0)
     val:SetJustifyH("RIGHT")
     val:SetTextColor(C_VALUE[1], C_VALUE[2], C_VALUE[3])
+    f.value = val
 
-    return y - ROW_H, lbl, val
+    local hl = f:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(1, 1, 1, 0.04)
+
+    f:EnableMouse(true)
+    f.tooltipTitle = nil
+    f.tooltipBody  = nil
+
+    f:SetScript("OnEnter", function(self)
+        if self.tooltipTitle then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(self.tooltipTitle, 1, 0.82, 0)
+            if self.tooltipBody then
+                GameTooltip:AddLine(self.tooltipBody, 1, 1, 1, true)
+            end
+            GameTooltip:Show()
+        end
+    end)
+    f:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    f.isHidden = false
+    return f
 end
 
---- Creates a clickable row with hover highlight for interactive Gear Audit lines.
-local function MakeClickableRow(parent, y, labelText)
+local function MakeClickableRow(parent)
     local btn = CreateFrame("Button", nil, parent)
-    btn:SetPoint("TOPLEFT",  parent, "TOPLEFT",  0, y)
-    btn:SetPoint("TOPRIGHT", parent, "TOPRIGHT", 0, y)
     btn:SetHeight(ROW_H)
-    btn:SetFrameLevel(parent:GetFrameLevel() + 5)
     btn:RegisterForClicks("LeftButtonUp")
+
+    local bg = btn:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(0.05, 0.05, 0.05, 0.4)
 
     local hl = btn:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
     hl:SetColorTexture(1, 1, 1, 0.06)
 
     local lbl = btn:CreateFontString(nil, "OVERLAY")
-    lbl:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
-    lbl:SetPoint("TOPLEFT", btn, "TOPLEFT", PAD_X + 4, 0)
+    lbl:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+    lbl:SetPoint("LEFT", btn, "LEFT", PAD_X, 0)
+    lbl:SetJustifyH("LEFT")
     lbl:SetTextColor(C_LABEL[1], C_LABEL[2], C_LABEL[3])
-    lbl:SetText(labelText)
+    btn.label = lbl
 
     local val = btn:CreateFontString(nil, "OVERLAY")
-    val:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
-    val:SetPoint("TOPRIGHT", btn, "TOPRIGHT", -PAD_X, 0)
+    val:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+    val:SetPoint("RIGHT", btn, "RIGHT", -PAD_X, 0)
     val:SetJustifyH("RIGHT")
     val:SetTextColor(C_VALUE[1], C_VALUE[2], C_VALUE[3])
+    btn.value = val
 
-    return y - ROW_H, btn, lbl, val
+    return btn
 end
 
 ---------------------------------------------------------------------------
@@ -409,79 +456,106 @@ local function BuildPanel()
     f:SetBackdrop({
         bgFile   = "Interface\\ChatFrame\\ChatFrameBackground",
         edgeFile = "Interface\\ChatFrame\\ChatFrameBackground",
-        tile     = true,
-        edgeSize = 1,
-        tileSize = 8,
+        tile = true, edgeSize = 1, tileSize = 8,
     })
-    f:SetBackdropColor(0.05, 0.05, 0.05, 0.85)
+    f:SetBackdropColor(0.04, 0.04, 0.04, 0.9)
     f:SetBackdropBorderColor(0.25, 0.25, 0.25, 0.8)
 
-    local y = -PAD_Y
+    -- Scrollable content
+    local sf = CreateFrame("ScrollFrame", nil, f, "ScrollFrameTemplate")
+    sf:SetPoint("TOPLEFT", f, "TOPLEFT", 0, -2)
+    sf:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -14, 2)
+
+    local sc = CreateFrame("Frame", nil, sf)
+    sc:SetWidth(PANEL_W - 16)
+    sf:SetScrollChild(sc)
+    widgets.scrollChild = sc
 
     -- ── Item Level ──────────────────────────────────────────────────────
-    y = MakeHeader(f, y, "Item Level")
+    local ilvlHdr
+    ilvlHdr, _ = MakeGradientHeader(sc, "ILVL", "Item Level", SEC_COLORS.ILVL, 0)
+    widgets.ilvlHeader = ilvlHdr
 
-    local ilvlVal = f:CreateFontString(nil, "OVERLAY")
-    ilvlVal:SetFont("Fonts\\FRIZQT__.TTF", 18, "")
-    ilvlVal:SetPoint("TOPLEFT", f, "TOPLEFT", PAD_X + 4, y)
+    -- Big ilvl display
+    local ilvlRow = CreateFrame("Button", nil, sc)
+    ilvlRow:SetHeight(24)
+    ilvlRow:RegisterForClicks("LeftButtonUp")
+    local ilvlVal = ilvlRow:CreateFontString(nil, "OVERLAY")
+    ilvlVal:SetFont("Fonts\\FRIZQT__.TTF", 16, "OUTLINE")
+    ilvlVal:SetPoint("LEFT", ilvlRow, "LEFT", PAD_X, 0)
     ilvlVal:SetTextColor(0.40, 0.78, 1.00)
-    ilvlVal:SetText("—")
     widgets.ilvl = ilvlVal
-    y = y - 26
+    widgets.ilvlRow = ilvlRow
 
-    y = MakeSep(f, y)
+    local slotsFS = ilvlRow:CreateFontString(nil, "OVERLAY")
+    slotsFS:SetFont("Fonts\\FRIZQT__.TTF", 9, "OUTLINE")
+    slotsFS:SetPoint("RIGHT", ilvlRow, "RIGHT", -PAD_X, 0)
+    slotsFS:SetJustifyH("RIGHT")
+    slotsFS:SetTextColor(C_LABEL[1], C_LABEL[2], C_LABEL[3])
+    widgets.slotsCount = slotsFS
+
+    ilvlRow:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Per-Slot Item Level", 1, 0.82, 0)
+        for _, info in ipairs(slotDetail) do
+            local qc = Data.QUALITY_COLORS[info.quality] or Data.QUALITY_COLORS[1]
+            GameTooltip:AddDoubleLine(info.slotName, tostring(info.ilvl),
+                qc[1], qc[2], qc[3], qc[1], qc[2], qc[3])
+        end
+        if #slotDetail == 0 then
+            GameTooltip:AddLine("No items detected", C_NA[1], C_NA[2], C_NA[3])
+        end
+        GameTooltip:Show()
+    end)
+    ilvlRow:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     -- ── Specialisation ──────────────────────────────────────────────────
-    y = MakeHeader(f, y, "Specialisation")
+    local specHdr
+    specHdr, _ = MakeGradientHeader(sc, "SPEC", "Specialisation", SEC_COLORS.SPEC, 0)
+    widgets.specHeader = specHdr
 
-    local specIconTex = f:CreateTexture(nil, "ARTWORK")
-    specIconTex:SetSize(16, 16)
-    specIconTex:SetPoint("TOPLEFT", f, "TOPLEFT", PAD_X + 4, y - 1)
-    specIconTex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-    specIconTex:Hide()
-    widgets.specIcon = specIconTex
+    local specRow = CreateFrame("Frame", nil, sc)
+    specRow:SetHeight(ROW_H + 14)
 
-    local specNameFS = f:CreateFontString(nil, "OVERLAY")
-    specNameFS:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
-    specNameFS:SetPoint("TOPLEFT", specIconTex, "TOPRIGHT", 4, 0)
-    specNameFS:SetTextColor(C_VALUE[1], C_VALUE[2], C_VALUE[3])
-    specNameFS:SetText("Unknown")
-    widgets.specName = specNameFS
+    local specIcon = specRow:CreateTexture(nil, "ARTWORK")
+    specIcon:SetSize(16, 16)
+    specIcon:SetPoint("TOPLEFT", specRow, "TOPLEFT", PAD_X, -2)
+    specIcon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    specIcon:Hide()
+    widgets.specIcon = specIcon
 
-    local specRoleFS = f:CreateFontString(nil, "OVERLAY")
-    specRoleFS:SetFont("Fonts\\FRIZQT__.TTF", 10, "")
-    specRoleFS:SetPoint("TOPLEFT", specNameFS, "BOTTOMLEFT", 0, -2)
-    specRoleFS:SetTextColor(C_LABEL[1], C_LABEL[2], C_LABEL[3])
-    specRoleFS:SetText("")
-    widgets.specRole = specRoleFS
-    y = y - ROW_H - 14
+    local specName = specRow:CreateFontString(nil, "OVERLAY")
+    specName:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+    specName:SetPoint("TOPLEFT", specIcon, "TOPRIGHT", 4, 0)
+    specName:SetTextColor(1, 1, 1)
+    widgets.specName = specName
 
-    y = MakeSep(f, y)
+    local specRole = specRow:CreateFontString(nil, "OVERLAY")
+    specRole:SetFont("Fonts\\FRIZQT__.TTF", 9, "OUTLINE")
+    specRole:SetPoint("TOPLEFT", specName, "BOTTOMLEFT", 0, -2)
+    specRole:SetTextColor(C_LABEL[1], C_LABEL[2], C_LABEL[3])
+    widgets.specRole = specRole
+    widgets.specRow = specRow
 
-    -- ── Gear Audit (interactive) ────────────────────────────────────────
-    y = MakeHeader(f, y, "Gear Audit")
+    -- ── Gear Audit ──────────────────────────────────────────────────────
+    local auditHdr
+    auditHdr, _ = MakeGradientHeader(sc, "AUDIT", "Gear Audit", SEC_COLORS.AUDIT, 0)
+    widgets.auditHeader = auditHdr
 
-    -- Enchants row — clickable, shows per-slot tooltip on hover
-    local y2, enchBtn, enchLbl, enchVal = MakeClickableRow(f, y, "Enchants:")
+    local enchBtn = MakeClickableRow(sc)
+    enchBtn.label:SetText("Enchants:")
     widgets.enchBtn = enchBtn
-    widgets.enchVal = enchVal
-    y = y2
 
     enchBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Enchant Status", C_HEADER[1], C_HEADER[2], C_HEADER[3])
+        GameTooltip:SetText("Enchant Status", 1, 0.82, 0)
         for _, info in ipairs(enchDetail) do
             if info.hasEnchant then
-                local name = info.enchantName or "Enchanted"
-                GameTooltip:AddDoubleLine(
-                    info.slotName, name,
-                    C_GOOD[1], C_GOOD[2], C_GOOD[3],
-                    C_GOOD[1], C_GOOD[2], C_GOOD[3])
+                GameTooltip:AddDoubleLine(info.slotName, info.enchantName or "Enchanted",
+                    C_GOOD[1], C_GOOD[2], C_GOOD[3], C_GOOD[1], C_GOOD[2], C_GOOD[3])
             else
-                GameTooltip:AddDoubleLine(
-                    info.slotName, "Missing",
-                    C_BAD[1], C_BAD[2], C_BAD[3],
-                    C_BAD[1], C_BAD[2], C_BAD[3])
+                GameTooltip:AddDoubleLine(info.slotName, "Missing",
+                    C_BAD[1], C_BAD[2], C_BAD[3], C_BAD[1], C_BAD[2], C_BAD[3])
             end
         end
         if #enchDetail == 0 then
@@ -496,31 +570,26 @@ local function BuildPanel()
     enchBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     enchBtn:SetScript("OnClick", function() CreateEnchantShoppingList() end)
 
-    -- Gems row — clickable
-    local y3, gemBtn, gemLbl, gemVal = MakeClickableRow(f, y, "Gems:")
+    local gemBtn = MakeClickableRow(sc)
+    gemBtn.label:SetText("Gems:")
     widgets.gemBtn = gemBtn
-    widgets.gemVal = gemVal
-    y = y3
 
     gemBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Gem Status", C_HEADER[1], C_HEADER[2], C_HEADER[3])
+        GameTooltip:SetText("Gem Status", 1, 0.82, 0)
         for _, info in ipairs(gemDetail) do
             local missing = info.total - info.filled
             if missing == 0 then
-                GameTooltip:AddDoubleLine(
-                    info.slotName, info.filled .. " / " .. info.total,
-                    C_GOOD[1], C_GOOD[2], C_GOOD[3],
-                    C_GOOD[1], C_GOOD[2], C_GOOD[3])
+                GameTooltip:AddDoubleLine(info.slotName, info.filled .. "/" .. info.total,
+                    C_GOOD[1], C_GOOD[2], C_GOOD[3], C_GOOD[1], C_GOOD[2], C_GOOD[3])
             else
-                GameTooltip:AddDoubleLine(
-                    info.slotName, info.filled .. " / " .. info.total .. "  (" .. missing .. " empty)",
-                    C_BAD[1], C_BAD[2], C_BAD[3],
-                    C_BAD[1], C_BAD[2], C_BAD[3])
+                GameTooltip:AddDoubleLine(info.slotName,
+                    info.filled .. "/" .. info.total .. "  (" .. missing .. " empty)",
+                    C_BAD[1], C_BAD[2], C_BAD[3], C_BAD[1], C_BAD[2], C_BAD[3])
             end
         end
         if #gemDetail == 0 then
-            GameTooltip:AddLine("No socketed gear equipped", C_NA[1], C_NA[2], C_NA[3])
+            GameTooltip:AddLine("No socketed gear", C_NA[1], C_NA[2], C_NA[3])
         end
         if Auctionator and Auctionator.API then
             GameTooltip:AddLine(" ")
@@ -531,88 +600,229 @@ local function BuildPanel()
     gemBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     gemBtn:SetScript("OnClick", function() CreateGemShoppingList() end)
 
-    y = MakeSep(f, y)
+    -- ── Tier Sets ───────────────────────────────────────────────────────
+    local tierHdr
+    tierHdr, _ = MakeGradientHeader(sc, "TIER", "Tier Sets", SEC_COLORS.TIER, 0)
+    widgets.tierHeader = tierHdr
+
+    widgets.tierRows = {}
+    for i = 1, 2 do
+        local nameRow = MakeStatRow(sc)
+        local bonusRow = CreateFrame("Frame", nil, sc)
+        bonusRow:SetHeight(ROW_H)
+        local bonusLbl = bonusRow:CreateFontString(nil, "OVERLAY")
+        bonusLbl:SetFont("Fonts\\FRIZQT__.TTF", 9, "OUTLINE")
+        bonusLbl:SetPoint("TOPLEFT", bonusRow, "TOPLEFT", PAD_X + 4, 0)
+        bonusLbl:SetPoint("TOPRIGHT", bonusRow, "TOPRIGHT", -PAD_X, 0)
+        bonusLbl:SetJustifyH("LEFT")
+        bonusLbl:SetWordWrap(true)
+        bonusLbl:SetTextColor(C_LABEL[1], C_LABEL[2], C_LABEL[3])
+        bonusRow.label = bonusLbl
+
+        widgets.tierRows[i] = { name = nameRow, bonus = bonusRow }
+    end
 
     -- ── Attributes ──────────────────────────────────────────────────────
-    y = MakeHeader(f, y, "Attributes")
+    local attrHdr
+    attrHdr, _ = MakeGradientHeader(sc, "ATTRIBUTES", "Attributes", SEC_COLORS.ATTRIBUTES, 0)
+    widgets.attrHeader = attrHdr
 
     widgets.primaryRows = {}
     for _, def in ipairs(Data.PRIMARY_STAT_KEYS) do
-        local yn, lbl, val = MakeRow(f, y, def.label .. ":")
-        lbl:Hide(); val:Hide()
-        widgets.primaryRows[def.key] = { lbl = lbl, val = val }
-        y = yn
+        local row = MakeStatRow(sc)
+        row.label:SetText(def.label)
+        row.statKey = def.key
+        widgets.primaryRows[def.key] = row
     end
 
-    y = MakeSep(f, y)
-
-    -- ── Enhancements ────────────────────────────────────────────────────
-    y = MakeHeader(f, y, "Enhancements")
+    -- ── Secondary ───────────────────────────────────────────────────────
+    local secHdr
+    secHdr, _ = MakeGradientHeader(sc, "SECONDARY", "Secondary", SEC_COLORS.SECONDARY, 0)
+    widgets.secHeader = secHdr
 
     widgets.secondaryRows = {}
     for _, def in ipairs(Data.SECONDARY_STAT_KEYS) do
-        local yn, lbl, val = MakeRow(f, y, def.label .. ":")
-        lbl:Hide(); val:Hide()
-        widgets.secondaryRows[def.key] = { lbl = lbl, val = val }
-        y = yn
+        local row = MakeStatRow(sc)
+        row.label:SetText(def.shortLabel)
+        row.statKey = def.key
+        row.cr = def.cr
+        widgets.secondaryRows[def.key] = row
     end
 
-    -- Save base y for talent section dynamic positioning
-    widgets.talentBaseY = y
-
     -- ── Talent Comparison ───────────────────────────────────────────────
-    local tc = CreateFrame("Frame", nil, f)
-    tc:SetPoint("TOPLEFT", f, "TOPLEFT", 0, y)
-    tc:SetPoint("RIGHT", f, "RIGHT", 0, 0)
-    tc:SetHeight(250)
-    widgets.talentFrame = tc
+    local talentHdr
+    talentHdr, _ = MakeGradientHeader(sc, "TALENTS", "Talent Comparison", SEC_COLORS.TALENTS, 0)
+    widgets.talentHeader = talentHdr
 
-    local ty = 0
-
-    local tSep = tc:CreateTexture(nil, "ARTWORK")
-    tSep:SetHeight(1)
-    tSep:SetPoint("TOPLEFT",  tc, "TOPLEFT",  PAD_X,  ty)
-    tSep:SetPoint("TOPRIGHT", tc, "TOPRIGHT", -PAD_X, ty)
-    tSep:SetColorTexture(0.35, 0.35, 0.35, 0.6)
-    ty = ty - (1 + SEP_GAP)
-
-    local tHdr = tc:CreateFontString(nil, "OVERLAY")
-    tHdr:SetFont("Fonts\\FRIZQT__.TTF", 12, "")
-    tHdr:SetPoint("TOPLEFT", tc, "TOPLEFT", PAD_X, ty)
-    tHdr:SetTextColor(C_HEADER[1], C_HEADER[2], C_HEADER[3])
-    tHdr:SetText("Talent Comparison")
-    ty = ty - HDR_H
-
-    local tSummary = tc:CreateFontString(nil, "OVERLAY")
-    tSummary:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
-    tSummary:SetPoint("TOPLEFT",  tc, "TOPLEFT",  PAD_X + 4, ty)
-    tSummary:SetPoint("TOPRIGHT", tc, "TOPRIGHT", -PAD_X,    ty)
-    tSummary:SetJustifyH("LEFT")
-    tSummary:SetTextColor(C_LABEL[1], C_LABEL[2], C_LABEL[3])
-    widgets.talentSummary = tSummary
-    ty = ty - ROW_H
+    local talentSummary = sc:CreateFontString(nil, "OVERLAY")
+    talentSummary:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+    talentSummary:SetJustifyH("LEFT")
+    talentSummary:SetTextColor(C_LABEL[1], C_LABEL[2], C_LABEL[3])
+    widgets.talentSummary = talentSummary
 
     widgets.diffRows = {}
     for i = 1, MAX_DIFF_ROWS do
-        local fs = tc:CreateFontString(nil, "OVERLAY")
+        local fs = sc:CreateFontString(nil, "OVERLAY")
         fs:SetFont("Fonts\\FRIZQT__.TTF", 9, "OUTLINE")
-        fs:SetPoint("TOPLEFT",  tc, "TOPLEFT",  PAD_X + 4, ty)
-        fs:SetPoint("TOPRIGHT", tc, "TOPRIGHT", -PAD_X,    ty)
         fs:SetJustifyH("LEFT")
         fs:SetWordWrap(false)
         fs:Hide()
         widgets.diffRows[i] = fs
-        ty = ty - DIFF_ROW_H
     end
 
-    local overflow = tc:CreateFontString(nil, "OVERLAY")
+    local overflow = sc:CreateFontString(nil, "OVERLAY")
     overflow:SetFont("Fonts\\FRIZQT__.TTF", 9, "OUTLINE")
-    overflow:SetPoint("TOPLEFT", tc, "TOPLEFT", PAD_X + 4, ty)
     overflow:SetTextColor(C_NA[1], C_NA[2], C_NA[3])
     overflow:Hide()
     widgets.talentOverflow = overflow
 
-    tc:Hide()
+    -- ── Layout function ─────────────────────────────────────────────────
+    -- Dynamically positions all elements, respecting collapsed sections
+    -- and hidden rows.
+    widgets.layoutFunc = function()
+        local y = -PAD_Y
+        local w = sc:GetWidth()
+
+        local function PlaceHeader(hdr)
+            hdr:ClearAllPoints()
+            hdr:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, y)
+            hdr:SetPoint("RIGHT", sc, "RIGHT", 0, 0)
+            hdr:Show()
+            y = y - HDR_H - ROW_SPC
+        end
+
+        local function PlaceRow(row)
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, y)
+            row:SetPoint("RIGHT", sc, "RIGHT", 0, 0)
+            row:Show()
+            y = y - ROW_H - ROW_SPC
+        end
+
+        local function PlaceFS(fs, h)
+            fs:ClearAllPoints()
+            fs:SetPoint("TOPLEFT", sc, "TOPLEFT", PAD_X, y)
+            fs:SetPoint("RIGHT", sc, "RIGHT", -PAD_X, 0)
+            fs:Show()
+            y = y - (h or DIFF_ROW_H) - ROW_SPC
+        end
+
+        -- Item Level
+        PlaceHeader(widgets.ilvlHeader)
+        if not widgets.ilvlHeader.isCollapsed then
+            widgets.ilvlRow:ClearAllPoints()
+            widgets.ilvlRow:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, y)
+            widgets.ilvlRow:SetPoint("RIGHT", sc, "RIGHT", 0, 0)
+            widgets.ilvlRow:Show()
+            y = y - 24 - ROW_SPC
+        else
+            widgets.ilvlRow:Hide()
+        end
+
+        -- Spec
+        PlaceHeader(widgets.specHeader)
+        if not widgets.specHeader.isCollapsed then
+            widgets.specRow:ClearAllPoints()
+            widgets.specRow:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, y)
+            widgets.specRow:SetPoint("RIGHT", sc, "RIGHT", 0, 0)
+            widgets.specRow:Show()
+            y = y - (ROW_H + 14) - ROW_SPC
+        else
+            widgets.specRow:Hide()
+        end
+
+        -- Gear Audit
+        PlaceHeader(widgets.auditHeader)
+        if not widgets.auditHeader.isCollapsed then
+            PlaceRow(widgets.enchBtn)
+            PlaceRow(widgets.gemBtn)
+        else
+            widgets.enchBtn:Hide()
+            widgets.gemBtn:Hide()
+        end
+
+        -- Tier Sets
+        if widgets.tierVisible then
+            PlaceHeader(widgets.tierHeader)
+            if not widgets.tierHeader.isCollapsed then
+                for i = 1, widgets.tierCount or 0 do
+                    local tr = widgets.tierRows[i]
+                    PlaceRow(tr.name)
+                    PlaceRow(tr.bonus)
+                end
+            end
+        else
+            widgets.tierHeader:Hide()
+        end
+        -- Hide unused tier rows always
+        for i = (widgets.tierCount or 0) + 1, 2 do
+            widgets.tierRows[i].name:Hide()
+            widgets.tierRows[i].bonus:Hide()
+        end
+
+        -- Attributes
+        PlaceHeader(widgets.attrHeader)
+        if not widgets.attrHeader.isCollapsed then
+            for _, def in ipairs(Data.PRIMARY_STAT_KEYS) do
+                local row = widgets.primaryRows[def.key]
+                if not row.isHidden then
+                    PlaceRow(row)
+                else
+                    row:Hide()
+                end
+            end
+        else
+            for _, def in ipairs(Data.PRIMARY_STAT_KEYS) do
+                widgets.primaryRows[def.key]:Hide()
+            end
+        end
+
+        -- Secondary
+        PlaceHeader(widgets.secHeader)
+        if not widgets.secHeader.isCollapsed then
+            for _, def in ipairs(Data.SECONDARY_STAT_KEYS) do
+                local row = widgets.secondaryRows[def.key]
+                if not row.isHidden then
+                    PlaceRow(row)
+                else
+                    row:Hide()
+                end
+            end
+        else
+            for _, def in ipairs(Data.SECONDARY_STAT_KEYS) do
+                widgets.secondaryRows[def.key]:Hide()
+            end
+        end
+
+        -- Talent Comparison
+        if widgets.talentVisible then
+            PlaceHeader(widgets.talentHeader)
+            if not widgets.talentHeader.isCollapsed then
+                PlaceFS(widgets.talentSummary, ROW_H)
+                for i = 1, MAX_DIFF_ROWS do
+                    local fs = widgets.diffRows[i]
+                    if fs:IsShown() then
+                        PlaceFS(fs)
+                    end
+                end
+                if widgets.talentOverflow:IsShown() then
+                    PlaceFS(widgets.talentOverflow)
+                end
+            else
+                widgets.talentSummary:Hide()
+                for i = 1, MAX_DIFF_ROWS do widgets.diffRows[i]:Hide() end
+                widgets.talentOverflow:Hide()
+            end
+        else
+            widgets.talentHeader:Hide()
+            widgets.talentSummary:Hide()
+            for i = 1, MAX_DIFF_ROWS do widgets.diffRows[i]:Hide() end
+            widgets.talentOverflow:Hide()
+        end
+
+        sc:SetHeight(math.abs(y) + PAD_Y)
+    end
+
     f:Hide()
     return f
 end
@@ -628,6 +838,9 @@ local ROLE_COLORS = {
     DAMAGER = { 1.00, 0.40, 0.30 },
 }
 
+local function Fmt(n) return Data.FormatNumber(n) end
+local function PctFmt(n) return string.format("%.2f%%", n or 0) end
+
 local function Refresh(unit)
     if not panel then return end
     if not unit then panel:Hide(); return end
@@ -638,12 +851,12 @@ local function Refresh(unit)
           enchSlots, enchFilled, gemTotal, gemFilled,
           primary, secondary = ComputeData(unit)
 
-    -- Build per-slot detail for interactive tooltips
     enchDetail, gemDetail = BuildSlotDetail(unit)
+    slotDetail = Data.GetPerSlotIlvl(unit)
 
-    -- Item level (coloured by class)
+    -- Item level (class-coloured)
     if avgIlvl > 0 then
-        widgets.ilvl:SetText(string.format("%.2f", avgIlvl))
+        widgets.ilvl:SetText(string.format("%.1f", avgIlvl))
         local _, class = UnitClass(unit)
         local cc = class and RAID_CLASS_COLORS[class]
         if cc then
@@ -655,6 +868,7 @@ local function Refresh(unit)
         widgets.ilvl:SetText("—")
         widgets.ilvl:SetTextColor(C_NA[1], C_NA[2], C_NA[3])
     end
+    widgets.slotsCount:SetText(#slotDetail .. "/16")
 
     -- Spec
     if specName then
@@ -678,102 +892,132 @@ local function Refresh(unit)
     -- Enchants
     if enchSlots > 0 then
         local missing = enchSlots - enchFilled
-        widgets.enchVal:SetText(enchFilled .. " / " .. enchSlots)
+        widgets.enchBtn.value:SetText(enchFilled .. "/" .. enchSlots)
         if missing == 0 then
-            widgets.enchVal:SetTextColor(C_GOOD[1], C_GOOD[2], C_GOOD[3])
+            widgets.enchBtn.value:SetTextColor(C_GOOD[1], C_GOOD[2], C_GOOD[3])
         elseif missing == enchSlots then
-            widgets.enchVal:SetTextColor(C_BAD[1],  C_BAD[2],  C_BAD[3])
+            widgets.enchBtn.value:SetTextColor(C_BAD[1], C_BAD[2], C_BAD[3])
         else
-            widgets.enchVal:SetTextColor(C_WARN[1], C_WARN[2], C_WARN[3])
+            widgets.enchBtn.value:SetTextColor(C_WARN[1], C_WARN[2], C_WARN[3])
         end
     else
-        widgets.enchVal:SetText("—")
-        widgets.enchVal:SetTextColor(C_NA[1], C_NA[2], C_NA[3])
+        widgets.enchBtn.value:SetText("—")
+        widgets.enchBtn.value:SetTextColor(C_NA[1], C_NA[2], C_NA[3])
     end
 
     -- Gems
     if gemTotal > 0 then
         local missing = gemTotal - gemFilled
-        widgets.gemVal:SetText(gemFilled .. " / " .. gemTotal)
+        widgets.gemBtn.value:SetText(gemFilled .. "/" .. gemTotal)
         if missing == 0 then
-            widgets.gemVal:SetTextColor(C_GOOD[1], C_GOOD[2], C_GOOD[3])
+            widgets.gemBtn.value:SetTextColor(C_GOOD[1], C_GOOD[2], C_GOOD[3])
         elseif missing == gemTotal then
-            widgets.gemVal:SetTextColor(C_BAD[1],  C_BAD[2],  C_BAD[3])
+            widgets.gemBtn.value:SetTextColor(C_BAD[1], C_BAD[2], C_BAD[3])
         else
-            widgets.gemVal:SetTextColor(C_WARN[1], C_WARN[2], C_WARN[3])
+            widgets.gemBtn.value:SetTextColor(C_WARN[1], C_WARN[2], C_WARN[3])
         end
     else
-        widgets.gemVal:SetText("—")
-        widgets.gemVal:SetTextColor(C_NA[1], C_NA[2], C_NA[3])
+        widgets.gemBtn.value:SetText("—")
+        widgets.gemBtn.value:SetTextColor(C_NA[1], C_NA[2], C_NA[3])
+    end
+
+    -- Tier sets
+    local tierSets = Data.GetTierSetInfo(unit)
+    if tierSets and #tierSets > 0 then
+        widgets.tierVisible = true
+        widgets.tierCount = math.min(#tierSets, 2)
+        for i = 1, widgets.tierCount do
+            local tr = widgets.tierRows[i]
+            local ts = tierSets[i]
+            tr.name.label:SetText(ts.name)
+            tr.name.value:SetText(ts.count .. "/" .. ts.total)
+            if ts.count >= ts.total then
+                tr.name.value:SetTextColor(C_GOOD[1], C_GOOD[2], C_GOOD[3])
+            elseif ts.count >= 2 then
+                tr.name.value:SetTextColor(C_WARN[1], C_WARN[2], C_WARN[3])
+            else
+                tr.name.value:SetTextColor(C_LABEL[1], C_LABEL[2], C_LABEL[3])
+            end
+            -- Bonus text
+            local bonusParts = {}
+            for _, b in ipairs(ts.bonuses) do
+                if b.active then
+                    table.insert(bonusParts, "|cff66ff66(" .. b.threshold .. ")|r " .. b.text)
+                else
+                    table.insert(bonusParts, "|cff666666(" .. b.threshold .. ")|r " .. b.text)
+                end
+            end
+            if #bonusParts > 0 then
+                tr.bonus.label:SetText(table.concat(bonusParts, "\n"))
+            else
+                tr.bonus.label:SetText("")
+            end
+        end
+    else
+        widgets.tierVisible = false
+        widgets.tierCount = 0
     end
 
     -- Primary stats
-    local hiddenPrimary = 0
     for _, def in ipairs(Data.PRIMARY_STAT_KEYS) do
         local row = widgets.primaryRows[def.key]
-        if row then
-            local v = primary[def.key]
-            if v and v > 0 then
-                row.val:SetText(Data.FormatNumber(v))
-                row.lbl:Show(); row.val:Show()
-            else
-                row.lbl:Hide(); row.val:Hide()
-                hiddenPrimary = hiddenPrimary + 1
-            end
+        local v = primary[def.key]
+        if v and v > 0 then
+            row.value:SetText(Fmt(v))
+            row.isHidden = false
+        else
+            row.isHidden = true
         end
     end
 
-    -- Secondary stats
-    local hiddenSecondary = 0
+    -- Secondary stats (rating + estimated %)
     for _, def in ipairs(Data.SECONDARY_STAT_KEYS) do
         local row = widgets.secondaryRows[def.key]
-        if row then
-            local v = secondary[def.key]
-            if v and v > 0 then
-                row.val:SetText(Data.FormatNumber(v))
-                row.lbl:Show(); row.val:Show()
+        local v = secondary[def.key]
+        if v and v > 0 then
+            local pctStr = Data.EstimatePercent(row.cr, v)
+            if pctStr then
+                row.value:SetText("(" .. pctStr .. ") " .. Fmt(v))
             else
-                row.lbl:Hide(); row.val:Hide()
-                hiddenSecondary = hiddenSecondary + 1
+                row.value:SetText(Fmt(v))
             end
+            row.tooltipTitle = def.label
+            row.tooltipBody  = string.format("Rating: %s%s",
+                Fmt(v), pctStr and ("\nEstimated: " .. pctStr) or "")
+            row.isHidden = false
+        else
+            row.isHidden = true
         end
     end
-
-    -- Reposition talent section
-    local talentY = widgets.talentBaseY + (hiddenPrimary + hiddenSecondary) * ROW_H
-    widgets.talentFrame:ClearAllPoints()
-    widgets.talentFrame:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, talentY)
-    widgets.talentFrame:SetPoint("RIGHT",   panel, "RIGHT",   0, 0)
 
     -- Talent comparison
     if not ns.db.showTalentCompare then
-        widgets.talentFrame:Hide()
+        widgets.talentVisible = false
     else
         local result, reason = ComputeTalentDiff(unit)
-
         if not result then
-            -- Hide entirely for different class or spec
             if reason == "class" or reason == "spec" then
-                widgets.talentFrame:Hide()
+                widgets.talentVisible = false
             else
-                -- API/config issue — show the section with a message
-                widgets.talentSummary:SetText(reason == "api" and "Talent API unavailable" or "Not available")
+                widgets.talentVisible = true
+                widgets.talentSummary:SetText(reason == "api"
+                    and "Talent API unavailable" or "Not available")
                 widgets.talentSummary:SetTextColor(C_NA[1], C_NA[2], C_NA[3])
                 for i = 1, MAX_DIFF_ROWS do widgets.diffRows[i]:Hide() end
                 widgets.talentOverflow:Hide()
-                widgets.talentFrame:Show()
             end
         else
+            widgets.talentVisible = true
             local pct = result.total > 0
                 and math.floor(result.matching / result.total * 100) or 0
             widgets.talentSummary:SetText(
-                string.format("%d / %d match (%d%%)", result.matching, result.total, pct))
+                string.format("%d/%d match (%d%%)", result.matching, result.total, pct))
             if pct == 100 then
                 widgets.talentSummary:SetTextColor(C_GOOD[1], C_GOOD[2], C_GOOD[3])
             elseif pct >= 80 then
                 widgets.talentSummary:SetTextColor(C_WARN[1], C_WARN[2], C_WARN[3])
             else
-                widgets.talentSummary:SetTextColor(C_BAD[1],  C_BAD[2],  C_BAD[3])
+                widgets.talentSummary:SetTextColor(C_BAD[1], C_BAD[2], C_BAD[3])
             end
 
             local maxShow = math.min(#result.diffs, MAX_DIFF_ROWS)
@@ -783,7 +1027,7 @@ local function Refresh(unit)
                     local pName = d.yourRank > 0  and (d.yours  or "?") or "not taken"
                     local iName = d.theirRank > 0 and (d.theirs or "?") or "not taken"
                     widgets.diffRows[i]:SetText(
-                        string.format("|cff%s%s|r  →  |cff%s%s|r",
+                        string.format("|cff%s%s|r  >  |cff%s%s|r",
                             CLR_YOU, pName, CLR_THEM, iName))
                     widgets.diffRows[i]:Show()
                 else
@@ -792,16 +1036,17 @@ local function Refresh(unit)
             end
 
             if #result.diffs > MAX_DIFF_ROWS then
-                widgets.talentOverflow:SetText("… and " .. (#result.diffs - MAX_DIFF_ROWS) .. " more")
+                widgets.talentOverflow:SetText(
+                    "... and " .. (#result.diffs - MAX_DIFF_ROWS) .. " more")
                 widgets.talentOverflow:Show()
             else
                 widgets.talentOverflow:Hide()
             end
-
-            widgets.talentFrame:Show()
         end
     end
 
+    -- Layout everything
+    widgets.layoutFunc()
     panel:Show()
 end
 

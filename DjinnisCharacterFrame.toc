@@ -18,3 +18,4 @@ Modules\SlotOverlay.lua
 Modules\SpecDisplay.lua
 Modules\StatsPanel.lua
 Modules\InspectPanel.lua
+Modules\GemSocket.lua
