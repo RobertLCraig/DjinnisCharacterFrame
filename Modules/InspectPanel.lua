@@ -156,10 +156,10 @@ local function ComputeTalentDiff(unit)
         return nil, "class"
     end
 
-    local playerSpecIndex = GetSpecialization()
+    local playerSpecIndex = C_SpecializationInfo.GetSpecialization()
     if not playerSpecIndex then return nil, "spec" end
-    local playerSpecID = select(1, GetSpecializationInfo(playerSpecIndex))
-    local targetSpecID = GetInspectSpecialization(unit)
+    local playerSpecID = select(1, C_SpecializationInfo.GetSpecializationInfo(playerSpecIndex))
+    local targetSpecID = C_SpecializationInfo.GetInspectSpecialization(unit)
     if not playerSpecID or not targetSpecID or playerSpecID ~= targetSpecID then
         return nil, "spec"
     end
@@ -248,7 +248,7 @@ local function ComputeData(unit)
         if count > 0 then avgIlvl = total / count end
     end
 
-    local specID = GetInspectSpecialization(unit)
+    local specID = C_SpecializationInfo.GetInspectSpecialization(unit)
     local specName, specIcon, specRole
     if specID and specID ~= 0 then
         local sex = UnitSex(unit)

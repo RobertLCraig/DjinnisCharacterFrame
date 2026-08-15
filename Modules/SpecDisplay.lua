@@ -78,10 +78,10 @@ local function UpdateCharBadge()
     if not charBadge then return end
     if not ns.db.showSpecDisplay then charBadge:Hide(); return end
 
-    local specIndex = GetSpecialization()
+    local specIndex = C_SpecializationInfo.GetSpecialization()
     if not specIndex then charBadge:Hide(); return end
 
-    local specID = select(1, GetSpecializationInfo(specIndex))
+    local specID = select(1, C_SpecializationInfo.GetSpecializationInfo(specIndex))
     local sex    = UnitSex("player")
     UpdateBadge(charBadge, specID, sex)
 end

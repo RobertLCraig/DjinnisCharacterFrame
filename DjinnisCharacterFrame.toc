@@ -1,7 +1,7 @@
-## Interface: 120001
+## Interface: 120100
 ## Title: Djinni's Character Frame
 ## Author: Djinni
-## Version: 0.1.0
+## Version: 0.1.1
 ## Notes: Enhances the Character and Inspect frames with per-slot ilvl, enchants, gems, spec, and secondary stats.
 ## Category: Character Info
 ## SavedVariables: DjinnisCharacterFrameDB
