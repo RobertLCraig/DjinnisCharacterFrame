@@ -18,5 +18,6 @@ ignore:
   - release.ps1
   - RELEASE_NOTES.md
   - releases
+  - DjinnisCharacterFrameDB.lua
 
 changelog: CHANGELOG.md
